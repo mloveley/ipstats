@@ -1,0 +1,231 @@
+#!/bin/sh
+# Shell script to display interface throughput in realtime on console. Where possible split the stats between IPv4 and IPv6
+# Testing shows its more accurate than speedtest.net or other web based testers
+#
+# $ ipstats
+# TIME				  en1 In / Out Mbps	IPv4 packets	IPv6 packets	TCP Mbps	TCPv4 In / Out Mbps	TCPv6 In / Out Mbps
+# Tue  4 Feb 2014 22:53:25 GMT :: en1 : 0.01 / 0.01	IPv4 : 1	IPv6 : 24	TCP : 0.00	TCPv4 : 0.00 / 0.00 	TCPv6 : 0.00 / 0.01
+# Tue  4 Feb 2014 22:53:30 GMT :: en1 : 0.03 / 0.03	IPv4 : 2	IPv6 : 42	TCP : 0.03	TCPv4 : 0.00 / 0.00 	TCPv6 : 0.03 / 0.02
+# Tue  4 Feb 2014 22:53:35 GMT :: en1 : 16.94 / 0.42	IPv4 : 3	IPv6 : 7297	TCP : 15.52	TCPv4 : 0.00 / 0.00 	TCPv6 : 16.89 / 0.18
+# Tue  4 Feb 2014 22:53:40 GMT :: en1 : 45.38 / 0.43	IPv4 : 3	IPv6 : 18921	TCP : 42.88	TCPv4 : 0.00 / 0.00 	TCPv6 : 43.88 / 0.17
+# Tue  4 Feb 2014 22:53:45 GMT :: en1 : 46.44 / 0.40	IPv4 : 11	IPv6 : 19370	TCP : 43.89	TCPv4 : 0.01 / 0.00 	TCPv6 : 44.89 / 0.16
+# Tue  4 Feb 2014 22:53:50 GMT :: en1 : 24.30 / 0.21	IPv4 : 0	IPv6 : 9962	TCP : 22.37	TCPv4 : 0.00 / 0.00 	TCPv6 : 22.58 / 0.08
+# Tue  4 Feb 2014 22:53:55 GMT :: en1 : 2.03 / 0.01	IPv4 : 2	IPv6 : 850	TCP : 1.92	TCPv4 : 0.00 / 0.00 	TCPv6 : 1.96 / 0.00
+#
+# On OSX Mavericks we can display TCP throughput stats
+# On linux there was no easy way to do this
+#
+# Author: Mark Loveley
+# Email: mloveley (at sign) gmail.com
+#
+
+SYSTYPE=`uname`
+
+# Commands used to gather stats
+if [ $SYSTYPE = "Darwin" ]; then
+  IFACE="en1"
+  CMD_IFACE_INBYTES='netstat -i -b | grep $IFACE.*Link | awk '"'{print \$7}'"
+  CMD_IFACE_OUTBYTES='netstat -i -b | grep $IFACE.*Link | awk '"'{print \$10}'"
+  CMD_IPV4='netstat -s -f inet -p ip | grep "total packets received" | sed -e "s/ total packets received//"'
+  CMD_IPV6='netstat -s -f inet6 -p ip6 | grep "total packets received" | sed -e "s/ total packets received//"'
+  CMD_TCP='netstat -s -p  tcp | grep "received in-sequence" | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  CMD_TCP_SENT_IPv4='netstat -s -p  tcp | egrep "over IPv4" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  CMD_TCP_RECV_IPv4='netstat -s -p  tcp | egrep "over IPv4" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  CMD_TCP_SENT_IPv6='netstat -s -p  tcp | egrep "over IPv6" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  CMD_TCP_RECV_IPv6='netstat -s -p  tcp | egrep "over IPv6" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+elif [ $SYSTYPE = "Linux" ]; then
+  IFACE="wlan0"
+  CMD_IFACE_INBYTES='cat /sys/class/net/$IFACE/statistics/rx_bytes'
+  CMD_IFACE_OUTBYTES='cat /sys/class/net/$IFACE/statistics/tx_bytes'
+  CMD_IPV4='sudo iptables -L INPUT -vxn | grep $IFACE | awk '"'{print \$1}'"
+  CMD_IPV6='sudo ip6tables -L INPUT -vxn | grep $IFACE | awk '"'{print \$1}'"
+  CMD_TCP='echo 0'
+  CMD_TCP_SENT_IPv4='echo 0'
+  CMD_TCP_RECV_IPv4='echo 0'
+  CMD_TCP_SENT_IPv6='echo 0'
+  CMD_TCP_RECV_IPv6='echo 0'
+  echo "WARNING: TCP stats are unavailable on Linux"
+  echo "WARNING: specific iptables rules are needed to work under linux"
+else
+  echo "Your system is currently unsupported. Good luck and patches are welcome!"
+  exit
+fi
+
+# configure these
+SLEEPSECS=5
+
+# Define variables
+IPV4PACKETS=0
+IPV6PACKETS=0
+TCPBYTES=0
+TCPv4SENT=0
+TCPv4RECV=0
+TCPv6SENT=0
+TCPv6RECV=0
+ICMPV6PMTU=0
+IFINBYTES=0
+IFOUTBYTES=0
+COUNT=0
+
+if [ ! -z "$1" ];
+then
+  IFACE=$1
+fi
+
+# On Linux check IPtables rules so that we can gather stats
+if [ $SYSTYPE = "Linux" ]; then
+ # Check the IPtables rules are setup as expected
+ IPV4TABLESCNT=`sudo iptables -L | grep -v ^$ | grep -v ^Chain| grep -v ^target | wc -l`
+
+ if [ $IPV4TABLESCNT = 2 ]; then
+  #echo "IPV4TABLESCNT = 2"
+  IPV4INTABLE=`sudo iptables -L INPUT -n -v | grep -v ^$ | grep -v ^Chain| grep -v "^ pkts"| sed -e "s/*/x/" | sed -e "s/^.* all/all/" | sed -e "s/ *//g"`
+  if [ "$IPV4INTABLE" != "all--"$IFACE"x0.0.0.0/00.0.0.0/0" ]; then
+    echo "IPv4 input table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+    echo "sudo iptables -F INPUT"
+    echo "sudo iptables -F OUTPUT"
+    echo "sudo iptables -I INPUT -i $IFACE"
+    echo "sudo iptables -I OUTPUT -o $IFACE"
+    echo "sudo ip6tables -F INPUT"
+    echo "sudo ip6tables -F OUTPUT"
+    echo "sudo ip6tables -I INPUT -i $IFACE"
+    echo "sudo ip6tables -I OUTPUT -o $IFACE"
+    exit
+  fi
+  IPV4OUTTABLE=`sudo iptables -L OUTPUT -n -v | grep -v ^$ | grep -v ^Chain| grep -v "^ pkts"| sed -e "s/*/x/" | sed -e "s/^.* all/all/" | sed -e "s/ *//g"`
+  if [ "$IPV4OUTTABLE" != "all--x"$IFACE"0.0.0.0/00.0.0.0/0" ]; then
+    echo "IPv4 output table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+    echo "sudo iptables -F INPUT"
+    echo "sudo iptables -F OUTPUT"
+    echo "sudo iptables -I INPUT -i $IFACE"
+    echo "sudo iptables -I OUTPUT -o $IFACE"
+    echo "sudo ip6tables -F INPUT"
+    echo "sudo ip6tables -F OUTPUT"
+    echo "sudo ip6tables -I INPUT -i $IFACE"
+    echo "sudo ip6tables -I OUTPUT -o $IFACE"
+    exit
+  fi
+ else
+  echo "IPV4TABLESCNT != 2 : exiting"
+  echo "IPv4 output table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+  echo "sudo iptables -F INPUT"
+  echo "sudo iptables -F OUTPUT"
+  echo "sudo iptables -I INPUT -i $IFACE"
+  echo "sudo iptables -I OUTPUT -o $IFACE"
+  echo "sudo ip6tables -F INPUT"
+  echo "sudo ip6tables -F OUTPUT"
+  echo "sudo ip6tables -I INPUT -i $IFACE"
+  echo "sudo ip6tables -I OUTPUT -o $IFACE"
+  exit
+ fi
+ IPV6TABLESCNT=`sudo ip6tables -L | grep -v ^$ | grep -v ^Chain| grep -v ^target | wc -l`
+ if [ $IPV6TABLESCNT = 2 ]; then
+  #echo "IPV6TABLESCNT = 2"
+  IPV6INTABLE=`sudo ip6tables -L INPUT -n -v | grep -v ^$ | grep -v ^Chain| grep -v "^ pkts"| sed -e "s/*/x/" | sed -e "s/^.* all/all/" | sed -e "s/ *//g"`
+  if [ "$IPV6INTABLE" != "all"$IFACE"x::/0::/0" ]; then
+    echo "IPv6 input table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+    echo "sudo iptables -F INPUT"
+    echo "sudo iptables -F OUTPUT"
+    echo "sudo iptables -I INPUT -i $IFACE"
+    echo "sudo iptables -I OUTPUT -o $IFACE"
+    echo "sudo ip6tables -F INPUT"
+    echo "sudo ip6tables -F OUTPUT"
+    echo "sudo ip6tables -I INPUT -i $IFACE"
+    echo "sudo ip6tables -I OUTPUT -o $IFACE"
+    exit
+  fi
+  IPV6OUTTABLE=`sudo ip6tables -L OUTPUT -n -v | grep -v ^$ | grep -v ^Chain| grep -v "^ pkts"| sed -e "s/*/x/" | sed -e "s/^.* all/all/" | sed -e "s/ *//g"`
+  if [ "$IPV6OUTTABLE" != "allx"$IFACE"::/0::/0" ]; then
+    echo "IPv6 output table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+    echo "sudo iptables -F INPUT"
+    echo "sudo iptables -F OUTPUT"
+    echo "sudo iptables -I INPUT -i $IFACE"
+    echo "sudo iptables -I OUTPUT -o $IFACE"
+    echo "sudo ip6tables -F INPUT"
+    echo "sudo ip6tables -F OUTPUT"
+    echo "sudo ip6tables -I INPUT -i $IFACE"
+    echo "sudo ip6tables -I OUTPUT -o $IFACE"
+    exit
+  fi
+ else
+  echo "IPV6TABLESCNT != 2 : exiting"
+  echo "IPv6 output table is not correct, run this to fix\n WARNING: it will wipe any existing iptables rules!"
+  echo "sudo iptables -F INPUT"
+  echo "sudo iptables -F OUTPUT"
+  echo "sudo iptables -I INPUT -i $IFACE"
+  echo "sudo iptables -I OUTPUT -o $IFACE"
+  echo "sudo ip6tables -F INPUT"
+  echo "sudo ip6tables -F OUTPUT"
+  echo "sudo ip6tables -I INPUT -i $IFACE"
+  echo "sudo ip6tables -I OUTPUT -o $IFACE"
+  exit
+ fi
+fi
+
+# Build a header
+HEADER="TIME\t\t\t\t$IFACE In / Out Mbps\tIPv4 packets\tIPv6 packets\tTCP Mbps\tTCPv4 In / Out Mbps\tTCPv6 In / Out Mbps"
+
+# Main loop
+while true
+do
+  # Print a header regularly
+  if [ `echo $(($COUNT % 10))` -eq 0 ]
+    then
+    echo "$HEADER"
+  fi
+
+  DATE=`date`
+  echo "$DATE :: \c"
+
+  # iface data
+  NEWIF=$(eval $CMD_IFACE_INBYTES)
+  DIFF=`echo "scale=2; ($NEWIF-$IFINBYTES)*8/$SLEEPSECS/1000/1000" | bc`
+  printf "%s %0.2f %s" "$IFACE :" $DIFF "/ "
+  IFINBYTES=`echo $NEWIF`	# update last value
+
+  # iface data
+  NEWIF=$(eval $CMD_IFACE_OUTBYTES)
+  DIFF=`echo "scale=2; ($NEWIF-$IFOUTBYTES)*8/$SLEEPSECS/1000/1000" | bc`
+  printf "%0.2f\t" $DIFF
+  IFOUTBYTES=`echo $NEWIF`	# update last value
+
+  # IPv4 Packets
+  NEWIPV4=$(eval $CMD_IPV4)
+  DIFF=`echo $NEWIPV4-$IPV4PACKETS | bc`
+  echo "IPv4 : $DIFF\t\c"
+  IPV4PACKETS=`echo $NEWIPV4`	# update last value
+
+  # IPv6 Packets
+  NEWIPV6=$(eval $CMD_IPV6)
+  DIFF=`echo $NEWIPV6-$IPV6PACKETS | bc`
+  echo "IPv6 : $DIFF\t\c"
+  IPV6PACKETS=`echo $NEWIPV6`	# update last value
+
+  # TCP data
+  NEWTCPBYTES=$(eval $CMD_TCP)
+  DIFF=`echo "scale=2; ($NEWTCPBYTES-$TCPBYTES)*8/$SLEEPSECS/1000/1000" | bc`
+  printf "%s %0.2f\t" "TCP :" $DIFF
+  TCPBYTES=`echo $NEWTCPBYTES`	# update last value
+
+  # TCPv4 data
+  NEWTCPv4SENT=$(eval $CMD_TCP_SENT_IPv4)
+  NEWTCPv4RECV=$(eval $CMD_TCP_RECV_IPv4)
+  DIFFSENT=`echo "scale=2; ($NEWTCPv4SENT-$TCPv4SENT)*8/$SLEEPSECS/1000/1000" | bc`
+  DIFFRECV=`echo "scale=2; ($NEWTCPv4RECV-$TCPv4RECV)*8/$SLEEPSECS/1000/1000" | bc`
+  printf "%s %0.2f %s %0.2f \t" "TCPv4 :" $DIFFRECV "/" $DIFFSENT
+  TCPv4SENT=`echo $NEWTCPv4SENT`	# update last value
+  TCPv4RECV=`echo $NEWTCPv4RECV`	# update last value
+
+  # TCPv6 data
+  NEWTCPv6SENT=$(eval $CMD_TCP_SENT_IPv6)
+  NEWTCPv6RECV=$(eval $CMD_TCP_RECV_IPv6)
+  DIFFSENT=`echo "scale=2; ($NEWTCPv6SENT-$TCPv6SENT)*8/$SLEEPSECS/1000/1000" | bc`
+  DIFFRECV=`echo "scale=2; ($NEWTCPv6RECV-$TCPv6RECV)*8/$SLEEPSECS/1000/1000" | bc`
+  printf "%s %0.2f %s %0.2f \t" "TCPv6 :" $DIFFRECV "/" $DIFFSENT
+  TCPv6SENT=`echo $NEWTCPv6SENT`	# update last value
+  TCPv6RECV=`echo $NEWTCPv6RECV`	# update last value
+
+  sleep $SLEEPSECS
+  COUNT=`echo "$COUNT+1" | bc`
+  echo
+done
