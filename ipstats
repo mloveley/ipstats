@@ -20,6 +20,7 @@
 #
 
 SYSTYPE=`uname`
+SYSVERSION=`uname -r`
 
 # Commands used to gather stats
 if [ $SYSTYPE = "Darwin" ]; then
@@ -29,10 +30,17 @@ if [ $SYSTYPE = "Darwin" ]; then
   CMD_IPV4='netstat -s -f inet -p ip | grep "total packets received" | sed -e "s/ total packets received//"'
   CMD_IPV6='netstat -s -f inet6 -p ip6 | grep "total packets received" | sed -e "s/ total packets received//"'
   CMD_TCP='netstat -s -p  tcp | grep "received in-sequence" | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
-  CMD_TCP_SENT_IPv4='netstat -s -p  tcp | egrep "over IPv4" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
-  CMD_TCP_RECV_IPv4='netstat -s -p  tcp | egrep "over IPv4" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
-  CMD_TCP_SENT_IPv6='netstat -s -p  tcp | egrep "over IPv6" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
-  CMD_TCP_RECV_IPv6='netstat -s -p  tcp | egrep "over IPv6" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  if [ $SYSVERSION = "^13.*" ]; then
+    CMD_TCP_SENT_IPv4='netstat -s -p  tcp | egrep "over IPv4" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+    CMD_TCP_RECV_IPv4='netstat -s -p  tcp | egrep "over IPv4" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+    CMD_TCP_SENT_IPv6='netstat -s -p  tcp | egrep "over IPv6" | head -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+    CMD_TCP_RECV_IPv6='netstat -s -p  tcp | egrep "over IPv6" | tail -1 | sed -e "s/.*(//" | sed -e "s/ bytes).*//"'
+  else
+    CMD_TCP_SENT_IPv4='echo 0'
+    CMD_TCP_RECV_IPv4='echo 0'
+    CMD_TCP_SENT_IPv6='echo 0'
+    CMD_TCP_RECV_IPv6='echo 0'
+  fi
 elif [ $SYSTYPE = "Linux" ]; then
   IFACE="wlan0"
   CMD_IFACE_INBYTES='cat /sys/class/net/$IFACE/statistics/rx_bytes'
